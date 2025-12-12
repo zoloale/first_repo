@@ -11,7 +11,7 @@ library(tidyverse)
 library(ggplot2)
 
 # Загрузить данные
-movies <- read.csv("movies_dataset.csv")
+movies <- read.csv("/data/movies_dataset.csv")
 
 # Просмотр данных
 head(movies, 10)
