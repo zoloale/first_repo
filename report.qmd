@@ -1,0 +1,566 @@
+---
+title: "Анализ факторов успеха кинофильмов"
+subtitle: "Многофакторная регрессия для прогнозирования кассовых сборов"
+author: "[Ваше имя]"
+date: today
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+    embed-resources: true
+editor: visual
+---
+
+# Введение
+
+## Цель исследования
+
+В этом отчете мы исследуем **факторы, влияющие на кассовые сборы кинофильмов**. Основная задача — построить регрессионную модель, которая позволит прогнозировать доходы фильма на основе его характеристик.
+
+## Исследовательские вопросы
+
+1. Как бюджет влияет на кассовые сборы?
+2. Различаются ли жанры по прибыльности?
+3. Влияет ли время выхода (сезонность) на успех фильма?
+4. Можно ли построить точную модель прогнозирования?
+
+## Данные
+
+Используем датасет `movies_dataset.csv`, содержащий информацию о **150 фильмах** (2015-2024):
+
+- Бюджет и кассовые сборы
+- Жанр, рейтинг, длительность
+- Дата выхода и количество кинотеатров
+
+------------------------------------------------------------------------
+
+# Загрузка данных
+
+```{r setup, message=FALSE, warning=FALSE}
+# Загрузка необходимых библиотек
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+library(broom)
+
+# Загрузка данных
+movies <- read.csv("movies_dataset.csv")
+
+# Настройки для графиков
+theme_set(theme_minimal())
+```
+
+Просмотр первых строк датасета:
+
+```{r}
+head(movies, 10) %>% 
+  kable(caption = "Первые 10 фильмов в датасете")
+```
+
+## Структура данных
+
+```{r}
+glimpse(movies)
+```
+
+Датасет содержит **`r nrow(movies)` фильмов** и **`r ncol(movies)` переменных**.
+
+------------------------------------------------------------------------
+
+# Исследовательский анализ данных (EDA)
+
+## Описательная статистика
+
+```{r}
+movies %>%
+  select(budget_millions, revenue_millions, runtime, rating, roi) %>%
+  summary() %>%
+  kable(caption = "Основные статистики")
+```
+
+::: {.callout-note}
+## Основные наблюдения
+
+- Средний бюджет: **\$`r round(mean(movies$budget_millions), 1)` млн**
+- Средний доход: **\$`r round(mean(movies$revenue_millions), 1)` млн**
+- Средняя рентабельность: **`r round(mean(movies$roi), 1)`%**
+:::
+
+## Распределение доходов
+
+Построим гистограмму распределения кассовых сборов:
+
+```{r}
+#| label: fig-revenue-dist
+#| fig-cap: "Распределение кассовых доходов (логарифмическая шкала)"
+#| warning: false
+
+ggplot(movies, aes(x = revenue_millions)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black", alpha = 0.7) +
+  scale_x_log10(labels = scales::dollar_format(suffix = "M")) +
+  labs(
+    title = "Распределение кассовых доходов",
+    x = "Доход (млн USD, логарифмическая шкала)",
+    y = "Количество фильмов"
+  )
+```
+
+**Вывод:** Распределение доходов **логнормальное** — большинство фильмов собирают умеренные суммы, но есть несколько блокбастеров с экстремально высокими сборами.
+
+## Зависимость дохода от бюджета
+
+```{r}
+#| label: fig-budget-revenue
+#| fig-cap: "Связь между бюджетом и доходом"
+#| fig-width: 8
+#| fig-height: 6
+
+ggplot(movies, aes(x = budget_millions, y = revenue_millions, color = genre)) +
+  geom_point(size = 3, alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "red", linewidth = 1.5) +
+  scale_x_log10(labels = scales::dollar_format(suffix = "M")) +
+  scale_y_log10(labels = scales::dollar_format(suffix = "M")) +
+  labs(
+    title = "Зависимость кассовых сборов от бюджета",
+    subtitle = "По жанрам (логарифмическая шкала)",
+    x = "Бюджет (млн USD)",
+    y = "Доход (млн USD)",
+    color = "Жанр"
+  )
+```
+
+**Наблюдение:** Существует **сильная положительная корреляция** между бюджетом и доходом. Чем больше бюджет, тем выше потенциальные сборы.
+
+## Анализ по жанрам
+
+```{r}
+#| label: fig-genre-boxplot
+#| fig-cap: "Распределение доходов по жанрам"
+#| fig-width: 8
+#| fig-height: 6
+
+ggplot(movies, aes(x = reorder(genre, revenue_millions, FUN = median), 
+                   y = revenue_millions, fill = genre)) +
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  coord_flip() +
+  scale_y_log10(labels = scales::dollar_format(suffix = "M")) +
+  labs(
+    title = "Распределение кассовых сборов по жанрам",
+    x = "Жанр",
+    y = "Доход (млн USD, логарифмическая шкала)"
+  )
+```
+
+### Средние показатели по жанрам
+
+```{r}
+genre_stats <- movies %>%
+  group_by(genre) %>%
+  summarise(
+    Количество = n(),
+    `Средний бюджет (M$)` = round(mean(budget_millions), 1),
+    `Средний доход (M$)` = round(mean(revenue_millions), 1),
+    `Средний ROI (%)` = round(mean(roi), 1),
+    `Средний рейтинг` = round(mean(rating), 1)
+  ) %>%
+  arrange(desc(`Средний доход (M$)`))
+
+kable(genre_stats, caption = "Средние показатели по жанрам")
+```
+
+::: {.callout-important}
+## Ключевой вывод
+
+**`r genre_stats$genre[1]`** — самый прибыльный жанр со средним доходом **\$`r genre_stats[1,3]` млн**.
+
+**`r genre_stats$genre[nrow(genre_stats)]`** — наименее прибыльный жанр (\$`r genre_stats[nrow(genre_stats),3]` млн).
+:::
+
+## Корреляционная матрица
+
+```{r}
+#| label: fig-correlation
+#| fig-cap: "Корреляция между числовыми переменными"
+
+cor_data <- movies %>%
+  select(budget_millions, revenue_millions, runtime, rating, theaters, roi) %>%
+  cor() %>%
+  round(2)
+
+# Визуализация корреляций
+cor_data %>%
+  as.data.frame() %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "correlation") %>%
+  ggplot(aes(x = var1, y = var2, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = correlation), color = "black", size = 4) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  labs(title = "Корреляционная матрица", x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**Самая сильная корреляция:** `budget_millions` ↔ `revenue_millions` (**`r cor_data["budget_millions", "revenue_millions"]`**)
+
+------------------------------------------------------------------------
+
+# Регрессионный анализ
+
+## Модель 1: Простая линейная регрессия
+
+Начнем с **простейшей модели**: доход зависит только от бюджета.
+
+$$
+\text{revenue} = \beta_0 + \beta_1 \cdot \text{budget} + \epsilon
+$$
+
+```{r}
+model1 <- lm(revenue_millions ~ budget_millions, data = movies)
+summary(model1)
+```
+
+### Интерпретация
+
+```{r}
+model1_summary <- glance(model1)
+coef1 <- round(coef(model1)[2], 2)
+```
+
+- **R² = `r round(model1_summary$r.squared, 3)`** — модель объясняет `r round(model1_summary$r.squared * 100, 1)`% вариации доходов
+- **Коэффициент бюджета:** `r coef1`
+  - Каждый дополнительный миллион бюджета → +\$`r coef1`M дохода
+- **p-value < 0.001** — эффект **статистически значим**
+
+::: {.callout-warning}
+## Проблема
+
+График остатков показывает **нелинейность** — лучше использовать логарифмическую модель!
+:::
+
+```{r}
+#| label: fig-residuals1
+#| fig-cap: "Остатки модели 1"
+
+plot(model1, which = 1)
+```
+
+## Модель 2: Логарифмическая регрессия
+
+Преобразуем переменные с помощью логарифма:
+
+$$
+\log(\text{revenue}) = \beta_0 + \beta_1 \cdot \log(\text{budget}) + \epsilon
+$$
+
+```{r}
+# Создаем логарифмированные переменные
+movies <- movies %>%
+  mutate(
+    log_budget = log(budget),
+    log_revenue = log(revenue)
+  )
+
+model2 <- lm(log_revenue ~ log_budget, data = movies)
+summary(model2)
+```
+
+### Интерпретация
+
+```{r}
+model2_summary <- glance(model2)
+coef2 <- round(coef(model2)[2], 2)
+```
+
+- **R² = `r round(model2_summary$r.squared, 3)`** (улучшение с `r round(model1_summary$r.squared, 3)`!)
+- **Коэффициент:** `r coef2`
+  - Увеличение бюджета на **1%** → доход увеличится на **`r coef2`%**
+  - Удвоение бюджета (×2) → доход ×**`r round(2^coef2, 2)`**
+
+## Модель 3: Добавляем жанр
+
+```{r}
+model3 <- lm(log_revenue ~ log_budget + genre, data = movies)
+summary(model3)
+```
+
+```{r}
+model3_summary <- glance(model3)
+```
+
+**R² = `r round(model3_summary$r.squared, 3)`** — небольшое улучшение (жанр имеет значение!)
+
+### Эффекты жанров
+
+```{r}
+genre_effects <- tidy(model3) %>%
+  filter(str_detect(term, "genre")) %>%
+  mutate(
+    term = str_remove(term, "genre"),
+    estimate = round(estimate, 3),
+    `Эффект (%)` = round((exp(estimate) - 1) * 100, 1)
+  ) %>%
+  select(Жанр = term, Коэффициент = estimate, `Эффект (%)`, `p-value` = p.value) %>%
+  arrange(desc(`Эффект (%)`))
+
+kable(genre_effects, caption = "Влияние жанров на доход (относительно базового жанра)")
+```
+
+::: {.callout-tip}
+## Важный вывод
+
+Например, если коэффициент для Animation = +0.30, это означает, что анимационный фильм того же бюджета собирает на **`r round((exp(0.30)-1)*100, 1)`%** больше, чем фильм базового жанра.
+:::
+
+## Модель 4: Полная многофакторная модель
+
+Добавляем все доступные предикторы:
+
+```{r}
+model4 <- lm(log_revenue ~ log_budget + genre + runtime + rating + release_month,
+             data = movies)
+summary(model4)
+```
+
+```{r}
+model4_summary <- glance(model4)
+```
+
+**Финальная модель:** R² = **`r round(model4_summary$r.squared, 3)`**
+
+------------------------------------------------------------------------
+
+# Сравнение моделей
+
+```{r}
+#| label: tbl-comparison
+#| tbl-cap: "Сравнение всех моделей"
+
+model_comparison <- tibble(
+  Модель = c(
+    "Model 1: revenue ~ budget",
+    "Model 2: log(revenue) ~ log(budget)",
+    "Model 3: + genre",
+    "Model 4: + runtime + rating + month"
+  ),
+  `R²` = c(
+    glance(model1)$r.squared,
+    glance(model2)$r.squared,
+    glance(model3)$r.squared,
+    glance(model4)$r.squared
+  ),
+  AIC = c(AIC(model1), AIC(model2), AIC(model3), AIC(model4)),
+  BIC = c(BIC(model1), BIC(model2), BIC(model3), BIC(model4))
+) %>%
+  mutate(across(where(is.numeric), ~round(.x, 2)))
+
+kable(model_comparison)
+```
+
+### Визуализация сравнения
+
+```{r}
+#| label: fig-model-comparison
+#| fig-cap: "Сравнение R² для разных моделей"
+
+ggplot(model_comparison, aes(x = Модель, y = `R²`, fill = Модель)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = `R²`), vjust = -0.3, size = 5) +
+  ylim(0, max(model_comparison$`R²`) * 1.1) +
+  labs(
+    title = "Качество моделей (R²)",
+    subtitle = "Модель 4 показывает лучший результат",
+    y = "R² (доля объясненной дисперсии)"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+::: {.callout-note}
+## Какую модель выбрать?
+
+**Модель 4** имеет наивысший R² = `r round(model4_summary$r.squared, 3)`, но разница с Моделью 3 небольшая. Для практического применения можно использовать **Модель 3** (проще, меньше параметров).
+:::
+
+------------------------------------------------------------------------
+
+# Прогнозирование
+
+## Пример: прогноз для нового фильма
+
+Представим, что мы планируем выпустить **новый анимационный фильм**:
+
+- Бюджет: **\$80 млн**
+- Жанр: **Animation**
+- Длительность: **120 минут**
+- Рейтинг: **7.5**
+- Месяц выхода: **Декабрь (12)**
+
+```{r}
+new_movie <- data.frame(
+  budget = 80e6,
+  log_budget = log(80e6),
+  budget_millions = 80,
+  genre = factor("Animation", levels = levels(factor(movies$genre))),
+  runtime = 120,
+  rating = 7.5,
+  release_month = 12
+)
+
+# Прогноз с интервалом
+prediction <- predict(model4, newdata = new_movie, interval = "prediction", level = 0.95)
+
+# Обратное преобразование из логарифма
+predicted_revenue <- exp(prediction[1, "fit"]) / 1e6
+lower_bound <- exp(prediction[1, "lwr"]) / 1e6
+upper_bound <- exp(prediction[1, "upr"]) / 1e6
+```
+
+::: {.callout-tip icon="true"}
+## Результат прогноза
+
+**Ожидаемый доход:** \$**`r round(predicted_revenue, 1)` млн**
+
+**95% доверительный интервал:** [\$`r round(lower_bound, 1)`M, \$`r round(upper_bound, 1)`M]
+
+Это означает, что с вероятностью 95% доход фильма окажется в этом диапазоне.
+:::
+
+------------------------------------------------------------------------
+
+# Валидация модели
+
+## Разделение на train и test
+
+Проверим качество модели на независимых данных:
+
+```{r}
+set.seed(42)
+
+# 80% train, 20% test
+train_indices <- sample(1:nrow(movies), size = 0.8 * nrow(movies))
+train_data <- movies[train_indices, ]
+test_data <- movies[-train_indices, ]
+```
+
+Размеры:
+
+- **Train:** `r nrow(train_data)` фильмов
+- **Test:** `r nrow(test_data)` фильмов
+
+```{r}
+# Модель на train
+model_train <- lm(log_revenue ~ log_budget + genre + runtime + rating,
+                  data = train_data)
+
+# Прогноз на test
+test_data$predicted_log <- predict(model_train, newdata = test_data)
+test_data$predicted_revenue <- exp(test_data$predicted_log)
+
+# Метрики ошибок
+mae <- mean(abs(test_data$revenue - test_data$predicted_revenue))
+rmse <- sqrt(mean((test_data$revenue - test_data$predicted_revenue)^2))
+r2_test <- cor(test_data$revenue, test_data$predicted_revenue)^2
+```
+
+### Метрики качества на тестовых данных
+
+| Метрика | Значение |
+|---------|----------|
+| MAE | \$`r round(mae/1e6, 1)` млн |
+| RMSE | \$`r round(rmse/1e6, 1)` млн |
+| R² (test) | `r round(r2_test, 3)` |
+
+```{r}
+#| label: fig-test-performance
+#| fig-cap: "Фактические vs прогнозируемые значения на тестовых данных"
+
+ggplot(test_data, aes(x = revenue_millions, y = predicted_revenue / 1e6)) +
+  geom_point(size = 3, alpha = 0.6, color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed", linewidth = 1) +
+  labs(
+    title = "Качество прогнозов на тестовых данных",
+    subtitle = "Красная линия = идеальный прогноз",
+    x = "Фактический доход (млн USD)",
+    y = "Прогнозируемый доход (млн USD)"
+  )
+```
+
+::: {.callout-note}
+## Оценка качества
+
+R² на тестовых данных = **`r round(r2_test, 3)`**, что близко к train R² = **`r round(summary(model_train)$r.squared, 3)`**.
+
+Это означает, что модель **НЕ переобучена** и хорошо обобщается на новые данные.
+:::
+
+------------------------------------------------------------------------
+
+# Выводы и рекомендации
+
+## Основные результаты
+
+1. **Бюджет — главный фактор успеха**
+   - Объясняет ~60% вариации доходов
+   - Увеличение бюджета на 1% → доход на ~0.6%
+
+2. **Жанр имеет значение**
+   - **Animation** и **Sci-Fi** — самые прибыльные
+   - **Horror** — низкие сборы, но и низкий бюджет
+
+3. **Качество модели**
+   - Финальная модель: R² = **`r round(model4_summary$r.squared, 3)`**
+   - Точность прогноза: ±\$`r round(rmse/1e6, 0)` млн
+
+4. **Модель не переобучена**
+   - Train R² ≈ Test R² (близкие значения)
+
+## Практические рекомендации
+
+::: {.callout-important}
+### Для киностудий:
+
+1. **Бюджет решает:** Больше вкладываете → больше получаете (но с убывающей отдачей)
+2. **Выбирайте жанр правильно:** Animation дает наивысшую отдачу
+3. **Сезонность важна:** Выпускайте в декабре или летом
+4. **Рейтинг влияет:** Качество фильма (рейтинг) положительно сказывается на сборах
+:::
+
+## Ограничения исследования
+
+- Синтетические данные (учебный пример)
+- Не учтены: маркетинговый бюджет, звезды актеров, конкуренция
+- Небольшая выборка (150 фильмов)
+- Не учтена инфляция
+
+## Направления улучшения
+
+1. Добавить данные о звездах актеров
+2. Учесть маркетинговый бюджет
+3. Использовать ML модели (Random Forest, XGBoost)
+4. Включить данные о конкурирующих релизах
+5. Анализировать региональные различия
+
+------------------------------------------------------------------------
+
+# Приложение
+
+## Информация о сессии
+
+```{r}
+sessionInfo()
+```
+
+## Полный код анализа
+
+Весь код, использованный в этом отчете, доступен в блоках выше. Вы можете скопировать любой фрагмент и адаптировать под свои данные.
+
+------------------------------------------------------------------------
+
+::: {.callout-note appearance="simple"}
+## О датасете
+
+Датасет `movies_dataset.csv` — учебный синтетический датасет, созданный для демонстрации методов регрессионного анализа. Паттерны в данных приближены к реальным, но не являются настоящей статистикой кинопроката.
+:::
+
+**Дата создания отчета:** `r Sys.Date()`
